@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101827" />
+  <title>Mobile Camera Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101827;
+      --panel: #182438;
+      --text: #f5f7fb;
+      --muted: #a9b5c8;
+      --accent: #54c7a5;
+      --danger: #ff7373;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 22px 16px calc(22px + env(safe-area-inset-bottom));
+      background: radial-gradient(circle at top, #20334d 0, var(--bg) 55%);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    main { width: min(100%, 760px); }
+    h1 { margin: 0 0 6px; font-size: clamp(1.55rem, 5vw, 2.15rem); }
+    .intro { margin: 0 0 18px; color: var(--muted); line-height: 1.5; }
+    .viewer {
+      overflow: hidden;
+      border: 1px solid #34445c;
+      border-radius: 20px;
+      background: #05080e;
+      box-shadow: 0 18px 50px #0006;
+      aspect-ratio: 4 / 3;
+      position: relative;
+    }
+    video {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #05080e;
+    }
+    .placeholder {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-content: center;
+      text-align: center;
+      color: #a9b5c8;
+      padding: 24px;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .placeholder strong { color: var(--text); font-size: 1.05rem; }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 14px 2px;
+      color: var(--muted);
+      font-size: .95rem;
+      min-height: 24px;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #8491a5; flex: 0 0 auto; }
+    .dot.live { background: var(--accent); box-shadow: 0 0 12px #54c7a588; }
+    .dot.error { background: var(--danger); }
+    .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    button {
+      border: 1px solid #3a4c66;
+      border-radius: 13px;
+      min-height: 48px;
+      padding: 11px 8px;
+      color: var(--text);
+      background: var(--panel);
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #06251d; }
+    button:disabled { opacity: .42; cursor: not-allowed; }
+    .note {
+      margin-top: 18px;
+      padding: 14px 15px;
+      border: 1px solid #34445c;
+      border-radius: 14px;
+      color: var(--muted);
+      background: #182438aa;
+      font-size: .9rem;
+      line-height: 1.55;
+    }
+    .note strong { color: var(--text); }
+    @media (max-width: 430px) {
+      body { padding-left: 12px; padding-right: 12px; }
+      .controls { grid-template-columns: 1fr 1fr; }
+      .controls button:first-child { grid-column: span 2; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Mobile Camera Viewer</h1>
+    <p class="intro">Open this page on your phone, allow camera access, and view the live camera feed.</p>
+
+    <section class="viewer" aria-label="Live camera preview">
+      <video id="camera" autoplay playsinline muted></video>
+      <div class="placeholder" id="placeholder">
+        <strong>Camera is not running</strong>
+        <span>Tap “Start camera” and allow permission when prompted.</span>
+      </div>
+    </section>
+
+    <div class="status" role="status" aria-live="polite">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">Camera stopped</span>
+    </div>
+
+    <div class="controls">
+      <button class="primary" id="startButton" type="button">Start camera</button>
+      <button id="switchButton" type="button" disabled>Switch camera</button>
+      <button id="stopButton" type="button" disabled>Stop camera</button>
+    </div>
+
+    <div class="note">
+      <strong>Privacy:</strong> This page displays the camera stream locally in your browser. This code does not record, upload, or send the camera video anywhere.
+      <br /><br />
+      <strong>Important:</strong> Camera access normally works only on a secure website (HTTPS) or on localhost. Opening this file directly from your phone’s file manager may not work.
+    </div>
+  </main>
+
+  <script>
+    const video = document.getElementById('camera');
+    const placeholder = document.getElementById('placeholder');
+    const statusText = document.getElementById('statusText');
+    const statusDot = document.getElementById('statusDot');
+    const startButton = document.getElementById('startButton');
+    const switchButton = document.getElementById('switchButton');
+    const stopButton = document.getElementById('stopButton');
+
+    let cameraStream = null;
+    let facingMode = 'environment'; // Start with the rear camera when available.
+
+    function setStatus(message, state = 'idle') {
+      statusText.textContent = message;
+      statusDot.className = 'dot' + (state === 'live' ? ' live' : state === 'error' ? ' error' : '');
+    }
+
+    function stopCamera() {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+      }
+      video.srcObject = null;
+      placeholder.hidden = false;
+      startButton.disabled = false;
+      switchButton.disabled = true;
+      stopButton.disabled = true;
+      setStatus('Camera stopped');
+    }
+
+    async function startCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatus('Camera API unavailable. Open this page using HTTPS in a supported browser.', 'error');
+        return;
+      }
+
+      startButton.disabled = true;
+      setStatus('Requesting camera permission…');
+
+      // Release the previous camera before switching cameras.
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+      }
+
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+
+        video.srcObject = cameraStream;
+        await video.play();
+        placeholder.hidden = true;
+        startButton.disabled = true;
+        switchButton.disabled = false;
+        stopButton.disabled = false;
+        setStatus(facingMode === 'environment' ? 'Rear camera is live' : 'Front camera is live', 'live');
+      } catch (error) {
+        if (cameraStream) {
+          cameraStream.getTracks().forEach(track => track.stop());
+          cameraStream = null;
+        }
+        video.srcObject = null;
+        placeholder.hidden = false;
+        startButton.disabled = false;
+        switchButton.disabled = true;
+        stopButton.disabled = true;
+
+        let message = 'Could not start the camera.';
+        if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+          message = 'Camera permission was denied. Allow camera access in your browser settings and try again.';
+        } else if (error.name === 'NotFoundError') {
+          message = 'No camera was found on this device.';
+        } else if (error.name === 'NotReadableError') {
+          message = 'The camera may already be in use by another app. Close that app and try again.';
+        }
+        setStatus(message, 'error');
+        console.error('Camera error:', error);
+      }
+    }
+
+    startButton.addEventListener('click', startCamera);
+    switchButton.addEventListener('click', async () => {
+      facingMode = facingMode === 'environment' ? 'user' : 'environment';
+      await startCamera();
+    });
+    stopButton.addEventListener('click', stopCamera);
+
+    // Release the camera when the page is being closed or navigated away from.
+    window.addEventListener('pagehide', stopCamera);
+  </script>
+</body>
+</html>
